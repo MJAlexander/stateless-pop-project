@@ -1,0 +1,122 @@
+library(tidyverse)
+library(here)
+library(cmdstanr)
+library(readxl)
+
+# Prepare Shona data
+load(here("data/shona2019_toronto.rdata"))
+
+# prepare fertility and mortality rates from WPP
+all_fert <- read_excel("data/wpp/WPP2019_FERT_F07_AGE_SPECIFIC_FERTILITY.xlsx", skip = 16) %>%
+  rename(region = `Region, subregion, country or area *`, period = Period) %>% 
+  select(-Index, -Variant, -Notes, -`Country code`, -`Parent code`, -`Type`) %>% 
+  mutate(year = as.numeric(str_extract(period, ".+?(?=-)"))) %>% # match everything before hyphen
+  pivot_longer(names_to = "age", values_to = "fert", cols = -c("region", "period", "year")) %>% 
+  mutate(age = as.numeric(str_extract(age, ".+?(?=-)")), fert = as.numeric(fert)/1000) %>%
+  select(-period)
+
+all_surv <- read_excel(here("data/wpp/WPP2019_MORT_F17_3_ABRIDGED_LIFE_TABLE_FEMALE.xlsx"), skip = 16) %>%
+  transmute(
+    region = `Region, subregion, country or area *`,
+    age = `Age (x)`,
+    period = Period,
+    Lx = as.numeric(`Number of person-years lived L(x,n)`)
+  ) %>%
+  group_by(region, period) %>%
+  mutate(surv = Lx / lag(Lx)) %>%
+  mutate(year = as.numeric(str_extract(period, ".+?(?=-)")))  %>%
+  group_by(age = ifelse(age == 1, 0, age)) %>%
+  group_by(region, year, age) %>%
+  summarise(Lx = sum(Lx)) %>%
+  mutate(surv = lead(Lx) / Lx) %>%
+  ungroup()
+
+kenya_surv <- all_surv %>%
+  filter(region == "Kenya") %>%
+  filter(!is.na(surv))
+
+kenya_fert <- all_fert %>%
+  filter(region == "Kenya") %>%
+  right_join(select(kenya_surv, -surv, -Lx)) %>%
+  arrange(region, year, age) %>%
+  mutate(fert = ifelse(is.na(fert), 0, fert))
+
+# create constants etc. 
+n_ages <- length(unique(kenya_fert$age))
+n_periods <- length(unique(kenya_fert$year))
+n_obs <- 1 # number of population observations
+
+# put rates into matrix format for Stan
+kenya_surv_mat <- matrix(kenya_surv$surv, nrow = n_periods, ncol = n_ages, byrow = TRUE) 
+kenya_fert_mat <- matrix(kenya_fert$fert, nrow = n_periods, ncol = n_ages, byrow = TRUE) 
+
+# some additional objects to help construct the fertility rate matrix in Stan
+fert_ages_bool <- apply(kenya_fert_mat, 2, function(x) any(x > 0))
+ages_before_fert = which(fert_ages_bool)[1] - 1
+ages_after_fert = n_ages - last(which(fert_ages_bool))
+
+# create mappings between indices and actual values
+age_mapping <- tibble(
+  number = 1:(n_ages + 1),
+  value = c(unique(kenya_fert$age), max(kenya_fert$age) + 5)
+)
+
+year_mapping <- data.frame(
+  number = 1:n_periods,
+  value = unique(kenya_fert$year)
+)
+
+# prepare population observation
+kenya_pop <- hhm %>%
+  filter(gender == 2, !is.na(age)) %>%
+  mutate(age = cut(as.numeric(age), breaks = c(seq(0, max(kenya_surv$age)-5, by = 5), Inf), labels = seq(0, max(kenya_surv$age)-5, by = 5), include_lowest = TRUE, right = FALSE)) %>%
+  group_by(age) %>%
+  summarise(n = n()) %>%
+  # complete age groups (possibly missing from survey) 
+  full_join(data.frame(age = as_factor(seq(0, max(kenya_surv$age), by = 5))), by = "age") %>%
+  mutate(n = ifelse(is.na(n), 0, n))
+
+# put data in list to pass to Stan
+data_list <- list(
+  K = n_ages,
+  Time = n_periods,
+  prop_f = 1/(1 + 1.05),
+  surv_mean = kenya_surv_mat,
+  fert_mean = kenya_fert_mat[, fert_ages_bool],
+  n_fert_ages = sum(fert_ages_bool),
+  ages_before_fert = ages_before_fert,
+  ages_after_fert = ages_after_fert,
+  t_obs = as.array(14),
+  n_obs = n_obs,
+  pop_obs = matrix(kenya_pop$n, nrow = 1, ncol = n_ages)
+)
+
+mod <- cmdstan_model(here("code/kenya_shona/1_uniform_init/projection1.stan"))
+
+fit <- mod$sample(
+  data = data_list,
+  seed = 131,
+  chains = 4,
+  parallel_chains = 4,
+  iter_warmup = 1500,
+  iter_sampling = 1500,
+  max_treedepth = 15,
+  adapt_delta = 0.99
+)
+
+# calculate summary statistics
+q_probs <- c(0.025, 0.05, 0.1, 0.25, 0.5, 0.75, 0.9, 0.95, 0.975)
+
+summary_table <- fit$summary(variables = NULL,
+    mean, sd, rhat, ~quantile2(.x, probs = q_probs), ess_bulk, ess_tail
+  )
+
+# save results
+to_save <- list(
+  data = data_list,
+  table = summary_table,
+  mappings = list(age = age_mapping, year = year_mapping)
+)
+
+write_rds(to_save, here("output/intermediate/kenya_shona_projection1_with_data.rds"))
+
