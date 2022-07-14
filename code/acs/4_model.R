@@ -59,7 +59,7 @@ stan_data <- list(y = log(y),
                   P = 5,
                  N = nrow(y), S = ncol(y))
 
-mod <- stan(data = stan_data, file = "script/acs/models/1_rw2.stan")
+mod <- stan(data = stan_data, file = "code/models/1_rw2.stan")
 
 yhat <- mod %>% 
   gather_draws(lambda[i,s]) %>% 
@@ -143,7 +143,7 @@ stan_data <- list(y = log(y),
                   P = 5,
                   N = nrow(y), S = ncol(y))
 
-mod2 <- stan(data = stan_data, file = "script/acs/models/1_rw2.stan")
+mod2 <- stan(data = stan_data, file = "code/models/1_rw2.stan")
 
 yhat2 <- mod2 %>% 
   gather_draws(lambda[i,s]) %>% 
@@ -202,7 +202,7 @@ stan_data <- list(y = log(df_nepal_summary$n),
                   N = length(years),
                   P = 5)
 
-mod <- stan(data = stan_data, file = "script/acs/models/2_rw2_prob.stan")
+mod <- stan(data = stan_data, file = "code/models/2_rw2_prob.stan")
 
 yhat <- mod %>% 
   gather_draws(eps[i]) %>% 
