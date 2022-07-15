@@ -59,7 +59,7 @@ stan_data <- list(y = log(y),
                   P = 5,
                  N = nrow(y), S = ncol(y))
 
-mod <- stan(data = stan_data, file = "code/models/1_rw2.stan")
+mod <- stan(data = stan_data, file = "code/acs/models/1_rw2.stan")
 
 yhat <- mod %>% 
   gather_draws(lambda[i,s]) %>% 
@@ -143,7 +143,7 @@ stan_data <- list(y = log(y),
                   P = 5,
                   N = nrow(y), S = ncol(y))
 
-mod2 <- stan(data = stan_data, file = "code/models/1_rw2.stan")
+mod2 <- stan(data = stan_data, file = "code/acs/models/1_rw2.stan")
 
 yhat2 <- mod2 %>% 
   gather_draws(lambda[i,s]) %>% 
@@ -178,6 +178,15 @@ df %>%
   tally() %>% 
   ggplot(aes(yoep, n)) + geom_bar(stat = "identity")
 
+df_nepal <- df %>% 
+  filter(group=="Nepal born after 1990") %>% 
+  mutate(year_diff = year - as.numeric(yoep)) %>% 
+  mutate(year_diff = ifelse(year_diff<0, 0, year_diff))
+
+df_nepal <- df_nepal %>% 
+  rowwise() %>% 
+  mutate(prob = min(0.5+0.01*year_diff, 0.95)) 
+
 
 df_nepal %>% select(year, year_diff, prob) %>% 
   group_by(year, year_diff, prob) %>% 
@@ -202,7 +211,7 @@ stan_data <- list(y = log(df_nepal_summary$n),
                   N = length(years),
                   P = 5)
 
-mod <- stan(data = stan_data, file = "code/models/2_rw2_prob.stan")
+mod <- stan(data = stan_data, file = "code/acs/models/2_rw2_prob.stan")
 
 yhat <- mod %>% 
   gather_draws(eps[i]) %>% 
@@ -216,6 +225,16 @@ proj <- mod %>%
   median_qi(.width = 0.5) %>% 
   mutate(year = 2019+i)
 
+yhat %>% 
+  ungroup() %>% 
+  select(year, fit, fit.lower, fit.upper) %>% 
+  mutate(type = "estimate") %>% 
+  bind_rows(proj %>% ungroup() %>% 
+              select(year, proj, proj.lower, proj.upper) %>% 
+              rename(fit = proj, fit.lower = proj.lower, fit.upper = proj.upper) %>% 
+              mutate(type = "projection")) %>% 
+  write_csv("output/acs_nepal.csv")
+
 group_counts %>% 
   filter(group=="Nepal born after 1990") %>% 
   ggplot(aes(year, n)) + geom_point() + 
@@ -228,4 +247,4 @@ group_counts %>%
                 filter(year<2022), 
               aes(year, y = proj, ymin = exp(.value.lower), ymax = exp(.value.upper)), alpha = 0.2, fill = 2)+
   ggtitle("Probability-adjusted estimates for Nepal")
-ggsave("notes/nepal_prob.pdf", width = 6, height = 4)
+ggsave("output/nepal_prob.pdf", width = 6, height = 4)
